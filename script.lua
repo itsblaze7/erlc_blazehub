@@ -1,210 +1,225 @@
+--[[
+    =============================================================================
+    BLZEYY HUB - Ultimate ERLC & Universal Automation Engine
+    Target Game: Emergency Response: Liberty County (PlaceId: 2534724415) & Universal
+    Engine: Luau Multi-Executor Compatibility (Delta, Wave, Hydrogen, Macsploit, Solara, etc.)
+    Version: 1.0.0
+    Authors: BLZEYY Engineering Team
+    =============================================================================
+--]]
 
-if getgenv().BlazyHubLoaded then
-    warn("[BLAZY-HUB]: Already running. Cleaning up previous instance...")
-    if getgenv().BlazyHubCleanup then
-        pcall(getgenv().BlazyHubCleanup)
-    end
+-- Prevent multiple instances
+if getgenv and getgenv().BLZEYY_LOADED then
+    warn("[BLZEYY HUB] Script is already executing!")
+    return
 end
-getgenv().BlazyHubLoaded = true
+if getgenv then getgenv().BLZEYY_LOADED = true end
 
-
+-- =============================================================================
+-- 1. ENVIRONMENT & SERVICES INITIALIZATION
+-- =============================================================================
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local StarterGui = game:GetService("StarterGui")
-local Camera = Workspace.CurrentCamera or Workspace:WaitForChild("Camera")
-local LocalPlayer = Players.LocalPlayer
+local CoreGui = game:GetService("CoreGui")
+local Camera = Workspace.CurrentCamera
 
--- Global Configuration Table
-local BlazyConfig = {
-    Bypass = {
-        PropertySpoof = true,
-        RemoteBlock = true,
-        ErrorSupression = true,
-        GuiProtection = true,
-    },
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    LocalPlayer = Players.LocalPlayer
+end
+
+local Mouse = LocalPlayer:GetMouse()
+local IsERLC = (game.PlaceId == 2534724415)
+
+-- Compatibility Polyfills
+local hookmetamethod = hookmetamethod or (getrawmetatable and function(t, m, f)
+    local mt = getrawmetatable(t)
+    local old = mt[m]
+    setreadonly(mt, false)
+    mt[m] = f
+    setreadonly(mt, true)
+    return old
+end)
+local newcclosure = newcclosure or function(f) return f end
+local checkcaller = checkcaller or function() return false end
+local getnamecallmethod = getnamecallmethod or function() return "" end
+local Drawing = Drawing or Drawing
+
+-- =============================================================================
+-- 2. CONFIGURATION & STATE
+-- =============================================================================
+local Config = {
     Combat = {
-        SilentAim = false,
-        FOV = 120,
-        ShowFOV = false,
-        FOVColor = Color3.fromRGB(255, 60, 60),
-        HitBone = "Head", -- "Head", "Torso", "HumanoidRootPart"
-        HitChance = 100,
+        Enabled = true,
+        SilentAim = true,
+        Smoothness = 3.5,
+        FOV = 130,
+        TargetBone = "Head", -- "Head", "HumanoidRootPart", "Closest"
+        VisibleCheck = true,
         TeamCheck = true,
-        WallCheck = true,
-        NoRecoil = false,
-        NoSpread = false,
-        RapidFire = false,
-    },
-    Movement = {
-        WalkSpeed = false,
-        SpeedValue = 28,
-        Fly = false,
-        FlySpeed = 50,
-        Noclip = false,
-        InfiniteJump = false,
-        InfiniteStamina = false,
-        NoFallDamage = false,
+        DrawFOV = true,
+        FOVColor = Color3.fromRGB(0, 217, 255),
+        NoRecoil = true,
+        NoSpread = true,
+        InstantReload = true
     },
     Visuals = {
-        ESP = false,
+        Master = true,
         Boxes = true,
-        Tracers = false,
-        Names = true,
+        BoxType = "2D", -- "2D" or "Corner"
+        Skeleton = true,
         Distance = true,
-        HealthBar = true,
-        ShowCops = true,
-        ShowCivs = true,
-        MaxDistance = 1500,
-        ATM_ESP = false,
+        Health = true,
+        Tracers = false,
+        TracerOrigin = "Bottom",
+        PlayerColor = Color3.fromRGB(0, 217, 255),
+        CopsColor = Color3.fromRGB(50, 130, 255),
+        WantedColor = Color3.fromRGB(255, 60, 60),
+        CopsESP = true,
+        ATM_ESP = true,
+        ATMColor = Color3.fromRGB(50, 230, 140),
+        RobberyESP = true,
+        VehicleESP = true
     },
-    Teleport = {
-        SafeMode = true,
-        StepDistance = 20,
-        StepDelay = 0.03,
+    Movement = {
+        SpeedEnabled = false,
+        SpeedValue = 28,
+        FlyEnabled = false,
+        FlySpeed = 50,
+        Noclip = false,
+        InfiniteStamina = true,
+        SafeTP = true
     },
     Automation = {
-        AutoATM = false,
-        AutoDeposit = true,
-        MinigameDelay = 0.18,
-        AutoJob = false,
-        JobType = "Mail Delivery",
-        AutoJewelry = false,
+        AutoATM = true,
+        AutoGlassCutter = true,
+        AutoLockpick = true,
+        AutoCashier = false,
+        AutoSanitation = false,
+        AntiArrest = true,
+        AntiTaser = true,
+        AntiAFK = true,
+        ServerHopOnStaff = false
     }
 }
 
+-- =============================================================================
+-- 3. ANTI-CHEAT MITIGATION & METAMETHOD HOOKS
+-- =============================================================================
+local AnticheatHooks = {}
 
-local BypassEngine = {}
-local OriginalHooks = {}
-local BlockedRemotes = {
-    "anticheat", "ac_report", "securitylog", "kickremote", "punish", 
-    "integritycheck", "telemetry", "clientanomaly", "detectionsignal", 
-    "securitycheck", "banplayer", "exploitlog", "memorycheck", "speedcheck"
-}
-
-function BypassEngine:Init()
-    -- 1.1 Metatable Property Spoofing (__index & __newindex)
-    local rawMeta = getrawmetatable(game)
-    local oldIndex = rawMeta.__index
-    local oldNewIndex = rawMeta.__newindex
-    local oldNamecall = rawMeta.__namecall
-
-    setreadonly(rawMeta, false)
-
-    -- Spoof Humanoid properties so client AC receives vanilla readings
-    rawMeta.__index = newcclosure(function(self, key)
-        if not checkcaller() and BlazyConfig.Bypass.PropertySpoof then
-            if typeof(self) == "Instance" and self:IsA("Humanoid") then
-                if key == "WalkSpeed" then
-                    return 16
-                elseif key == "JumpPower" then
-                    return 50
-                elseif key == "HipHeight" then
-                    return 0
-                end
-            end
-        end
-        return oldIndex(self, key)
-    end)
-
-    -- Filter Remote calls (__namecall)
-    rawMeta.__namecall = newcclosure(function(self, ...)
+-- 3.1 Hook __namecall to intercept detection remotes and silent aim vectoring
+if hookmetamethod then
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
         local method = getnamecallmethod()
         local args = {...}
 
-        if BlazyConfig.Bypass.RemoteBlock and method == "FireServer" and typeof(self) == "Instance" then
-            local remoteName = string.lower(self.Name)
-            for _, blocked in ipairs(BlockedRemotes) do
-                if string.find(remoteName, blocked) then
+        if not checkcaller() then
+            -- A: Anti-Cheat & Telemetry Interception
+            local name = tostring(self.Name)
+            if method == "FireServer" or method == "InvokeServer" then
+                -- Intercept and suppress ERLC speed/walk checks, crashers, and ban triggers
+                if name:match("Detection") or name:match("Suspicious") or name:match("Ban") or name:match("Cheat") then
                     return nil
                 end
-            end
+                
+                -- Stamina consumption suppression
+                if Config.Movement.InfiniteStamina and (name:match("Stamina") or name:match("SprintDrain")) then
+                    return nil
+                end
 
-            -- Gun Mods Injection via Remote
-            if BlazyConfig.Combat.NoSpread and args[1] and typeof(args[1]) == "table" then
-                if args[1].SpreadAngle or args[1].Spread then
-                    args[1].SpreadAngle = 0
-                    args[1].Spread = 0
+                -- Gun mods: Silent aim bullet redirection
+                if Config.Combat.Enabled and Config.Combat.SilentAim and (name:match("Shoot") or name:match("Fire") or name:match("Hit") or name:match("Bullet")) then
+                    local target = AnticheatHooks.GetBestTarget()
+                    if target and target.Character and target.Character:FindFirstChild(Config.Combat.TargetBone) then
+                        local hitPart = target.Character[Config.Combat.TargetBone]
+                        -- Override hit position in remote arguments
+                        for i, arg in ipairs(args) do
+                            if typeof(arg) == "Vector3" then
+                                args[i] = hitPart.Position
+                            elseif typeof(arg) == "CFrame" then
+                                args[i] = hitPart.CFrame
+                            elseif typeof(arg) == "Instance" and (arg:IsA("BasePart") or arg:IsA("Model")) then
+                                args[i] = hitPart
+                            end
+                        end
+                        return oldNamecall(self, unpack(args))
+                    end
                 end
             end
         end
 
         return oldNamecall(self, ...)
-    end)
+    end))
 
-    setreadonly(rawMeta, true)
-
-    -- 1.2 Raycast Hook for Universal Silent Aim
-    local oldRaycast = Workspace.Raycast
-    Workspace.Raycast = newcclosure(function(self, origin, direction, params, ...)
-        if BlazyConfig.Combat.SilentAim and not checkcaller() then
-            local targetPart = BypassEngine:GetSilentAimTarget(origin)
-            if targetPart then
-                direction = (targetPart.Position - origin).Unit * direction.Magnitude
+    -- 3.2 Hook __index to spoof walkspeed & humanoid states against client-side checkers
+    local oldIndex
+    oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
+        if not checkcaller() and typeof(self) == "Instance" and self:IsA("Humanoid") then
+            if key == "WalkSpeed" and Config.Movement.SpeedEnabled then
+                return 16 -- Return default walkspeed to any anti-cheat scripts querying the property
+            elseif key == "JumpPower" then
+                return 50
             end
         end
-        return oldRaycast(self, origin, direction, params, ...)
-    end)
-
-    -- 1.3 Introspection & Error Suppression
-    if getconnections then
-        pcall(function()
-            for _, conn in ipairs(getconnections(game:GetService("ScriptContext").Error)) do
-                conn:Disable()
-            end
-        end)
-    end
-
-    print("[BLAZY-HUB]: Universal Anti-Cheat Bypass Layer Active.")
+        return oldIndex(self, key)
+    end))
 end
 
--- Target acquisition for Silent Aim
-function BypassEngine:GetSilentAimTarget(origin)
+-- =============================================================================
+-- 4. COMBAT & SILENT AIM ENGINE
+-- =============================================================================
+local FOVCircle = nil
+if Drawing then
+    FOVCircle = Drawing.new("Circle")
+    FOVCircle.Thickness = 1.5
+    FOVCircle.NumSides = 64
+    FOVCircle.Radius = Config.Combat.FOV
+    FOVCircle.Filled = false
+    FOVCircle.Visible = Config.Combat.DrawFOV
+    FOVCircle.Color = Config.Combat.FOVColor
+    FOVCircle.Transparency = 0.8
+end
+
+function AnticheatHooks.IsVisible(part)
+    if not Config.Combat.VisibleCheck then return true end
+    local origin = Camera.CFrame.Position
+    local dir = part.Position - origin
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = { LocalPlayer.Character, Camera }
+    local result = Workspace:Raycast(origin, dir, rayParams)
+    return (result == nil or (result.Instance and result.Instance:IsDescendantOf(part.Parent)))
+end
+
+function AnticheatHooks.GetBestTarget()
     local bestTarget = nil
-    local shortestDist = BlazyConfig.Combat.FOV
-    local mousePos = UserInputService:GetMouseLocation()
+    local shortestDist = Config.Combat.FOV
+    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
 
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") then
-            local hum = player.Character.Humanoid
-            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-            local targetBone = player.Character:FindFirstChild(BlazyConfig.Combat.HitBone) or hrp
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+            -- Team check
+            if Config.Combat.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                continue
+            end
 
-            if hum.Health > 0 and targetBone then
-                -- Team Filtering
-                local isAlly = false
-                if BlazyConfig.Combat.TeamCheck and LocalPlayer.Team and player.Team then
-                    isAlly = (LocalPlayer.Team == player.Team)
-                end
-
-                if not isAlly then
-                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetBone.Position)
-                    if onScreen then
-                        local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                        if screenDist <= shortestDist then
-                            -- Wall Obstruction Check
-                            local visible = true
-                            if BlazyConfig.Combat.WallCheck then
-                                local rayParams = RaycastParams.new()
-                                rayParams.FilterType = RaycastFilterType.Exclude
-                                rayParams.FilterDescendantsInstances = {LocalPlayer.Character, player.Character, Camera}
-                                local result = Workspace:Raycast(origin or Camera.CFrame.Position, (targetBone.Position - (origin or Camera.CFrame.Position)), rayParams)
-                                if result then
-                                    visible = false
-                                end
-                            end
-
-                            if visible then
-                                -- Hit chance probability check
-                                if math.random(1, 100) <= BlazyConfig.Combat.HitChance then
-                                    shortestDist = screenDist
-                                    bestTarget = targetBone
-                                end
-                            end
-                        end
+            local hitPart = player.Character:FindFirstChild(Config.Combat.TargetBone) or player.Character:FindFirstChild("Head")
+            if hitPart then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(hitPart.Position)
+                if onScreen then
+                    local screenVec2 = Vector2.new(screenPos.X, screenPos.Y)
+                    local dist = (mousePos - screenVec2).Magnitude
+                    if dist <= shortestDist and AnticheatHooks.IsVisible(hitPart) then
+                        shortestDist = dist
+                        bestTarget = player
                     end
                 end
             end
@@ -213,47 +228,275 @@ function BypassEngine:GetSilentAimTarget(origin)
     return bestTarget
 end
 
-BypassEngine:Init()
+-- Weapon recoil & spread negation
+RunService.RenderStepped:Connect(function()
+    -- Keep FOV circle centered on mouse cursor
+    if FOVCircle then
+        FOVCircle.Position = Vector2.new(Mouse.X, Mouse.Y + 36)
+        FOVCircle.Radius = Config.Combat.FOV
+        FOVCircle.Visible = Config.Combat.DrawFOV and Config.Combat.Enabled
+        FOVCircle.Color = Config.Combat.FOVColor
+    end
 
---------------------------------------------------------------------------------
--- 2. MOVEMENT ENGINE (CFrame Driven, Zero Humanoid.WalkSpeed Modification)
---------------------------------------------------------------------------------
-local MovementEngine = {
-    FlyActive = false,
-    FlySpeed = 50,
-    FlyGyro = nil,
-    FlyVel = nil,
-}
-
-local function GetHRP()
-    local char = LocalPlayer.Character
-    return char and char:FindFirstChild("HumanoidRootPart")
-end
-
-local function GetHum()
-    local char = LocalPlayer.Character
-    return char and char:FindFirstChild("Humanoid")
-end
-
--- RenderStepped CFrame-based WalkSpeed
-RunService.RenderStepped:Connect(function(dt)
-    if BlazyConfig.Movement.WalkSpeed then
-        local hrp = GetHRP()
-        local hum = GetHum()
-        if hrp and hum and hum.Health > 0 and not hum.Sit then
-            local moveDir = hum.MoveDirection
-            if moveDir.Magnitude > 0 then
-                -- Calculate offset based on slider speed, keeping original WalkSpeed untouched
-                local speedDiff = math.max(0, BlazyConfig.Movement.SpeedValue - 16)
-                hrp.CFrame = hrp.CFrame + (moveDir * speedDiff * dt)
+    -- Recoil compensation
+    if Config.Combat.NoRecoil and LocalPlayer.Character then
+        local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+        if tool then
+            -- Hook weapon recoil attributes or camera shake modules if present
+            local recoilVal = tool:FindFirstChild("Recoil") or tool:FindFirstChild("Kickback")
+            if recoilVal and recoilVal:IsA("NumberValue") then
+                recoilVal.Value = 0
             end
         end
     end
 end)
 
--- Noclip Implementation
+-- =============================================================================
+-- 5. VISUALS & ESP (PLAYERS, COPS, ATMS, OBJECTIVES)
+-- =============================================================================
+local ESPCache = {}
+
+local function CreateESPElement(player)
+    local esp = {
+        Player = player,
+        Box = Drawing and Drawing.new("Square"),
+        Name = Drawing and Drawing.new("Text"),
+        Distance = Drawing and Drawing.new("Text"),
+        HealthBarBg = Drawing and Drawing.new("Square"),
+        HealthBar = Drawing and Drawing.new("Square"),
+        Tracer = Drawing and Drawing.new("Line")
+    }
+
+    if esp.Box then
+        esp.Box.Thickness = 1.5
+        esp.Box.Filled = false
+        esp.Box.Visible = false
+
+        esp.Name.Size = 13
+        esp.Name.Center = true
+        esp.Name.Outline = true
+        esp.Name.Visible = false
+
+        esp.Distance.Size = 12
+        esp.Distance.Center = true
+        esp.Distance.Outline = true
+        esp.Distance.Visible = false
+
+        esp.HealthBarBg.Filled = true
+        esp.HealthBarBg.Color = Color3.fromRGB(20, 20, 20)
+        esp.HealthBarBg.Visible = false
+
+        esp.HealthBar.Filled = true
+        esp.HealthBar.Color = Color3.fromRGB(40, 220, 80)
+        esp.HealthBar.Visible = false
+
+        esp.Tracer.Thickness = 1.0
+        esp.Tracer.Visible = false
+    end
+
+    ESPCache[player] = esp
+    return esp
+end
+
+local function RemoveESPElement(player)
+    local esp = ESPCache[player]
+    if esp then
+        for _, elem in pairs(esp) do
+            if typeof(elem) == "table" and elem.Remove then
+                elem:Remove()
+            end
+        end
+        ESPCache[player] = nil
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then CreateESPElement(p) end
+end
+Players.PlayerAdded:Connect(CreateESPElement)
+Players.PlayerRemoving:Connect(RemoveESPElement)
+
+-- ERLC Objective & ATM ESP Items
+local WorldESPMarkers = {}
+
+local function ScanWorldObjectives()
+    if not IsERLC or not Drawing then return end
+
+    -- Scan for ATMs
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj.Name:match("ATM") and (obj:IsA("Model") or obj:IsA("BasePart")) then
+            if not WorldESPMarkers[obj] then
+                local text = Drawing.new("Text")
+                text.Text = "[ATM]"
+                text.Size = 13
+                text.Center = true
+                text.Outline = true
+                text.Color = Config.Visuals.ATMColor
+                text.Visible = false
+                WorldESPMarkers[obj] = { Type = "ATM", Drawing = text, Object = obj }
+            end
+        elseif (obj.Name:match("Jewelry") or obj.Name:match("GlassCase") or obj.Name:match("BankVault")) and not WorldESPMarkers[obj] then
+            local text = Drawing.new("Text")
+            text.Text = "[" .. obj.Name .. "]"
+            text.Size = 12
+            text.Center = true
+            text.Outline = true
+            text.Color = Color3.fromRGB(255, 200, 50)
+            text.Visible = false
+            WorldESPMarkers[obj] = { Type = "Robbery", Drawing = text, Object = obj }
+        end
+    end
+end
+
+if IsERLC then
+    task.spawn(function()
+        while task.wait(5) do
+            ScanWorldObjectives()
+        end
+    end)
+end
+
+-- Render loop for Visuals
+RunService.RenderStepped:Connect(function()
+    if not Drawing then return end
+
+    -- Render Player ESP
+    for player, esp in pairs(ESPCache) do
+        local char = player.Character
+        local hum = char and char:FindFirstChild("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if Config.Visuals.Master and char and hum and hrp and hum.Health > 0 then
+            local rootPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            if onScreen then
+                local head = char:FindFirstChild("Head")
+                local topY = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.6, 0)).Y or (rootPos.Y - 20)
+                local bottomY = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.8, 0)).Y
+                local height = math.abs(bottomY - topY)
+                local width = height * 0.65
+
+                local boxColor = Config.Visuals.PlayerColor
+                if IsERLC and player.Team then
+                    local tName = player.Team.Name:lower()
+                    if tName:match("police") or tName:match("sheriff") or tName:match("officer") then
+                        boxColor = Config.Visuals.CopsColor
+                    elseif tName:match("wanted") or tName:match("criminal") then
+                        boxColor = Config.Visuals.WantedColor
+                    end
+                end
+
+                -- Box
+                if Config.Visuals.Boxes and esp.Box then
+                    esp.Box.Size = Vector2.new(width, height)
+                    esp.Box.Position = Vector2.new(rootPos.X - width * 0.5, topY)
+                    esp.Box.Color = boxColor
+                    esp.Box.Visible = true
+                else
+                    esp.Box.Visible = false
+                end
+
+                -- Name
+                if esp.Name then
+                    esp.Name.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+                    esp.Name.Position = Vector2.new(rootPos.X, topY - 16)
+                    esp.Name.Color = boxColor
+                    esp.Name.Visible = true
+                end
+
+                -- Distance
+                if Config.Visuals.Distance and esp.Distance then
+                    local dist = math.floor((Camera.CFrame.Position - hrp.Position).Magnitude)
+                    esp.Distance.Text = tostring(dist) .. "m"
+                    esp.Distance.Position = Vector2.new(rootPos.X, bottomY + 2)
+                    esp.Distance.Color = Color3.fromRGB(200, 200, 200)
+                    esp.Distance.Visible = true
+                else
+                    esp.Distance.Visible = false
+                end
+
+                -- Health Bar
+                if Config.Visuals.Health and esp.HealthBar and esp.HealthBarBg then
+                    local barWidth = 3
+                    local barHeight = height * (hum.Health / math.max(hum.MaxHealth, 1))
+                    esp.HealthBarBg.Size = Vector2.new(barWidth, height)
+                    esp.HealthBarBg.Position = Vector2.new(rootPos.X - width * 0.5 - 6, topY)
+                    esp.HealthBarBg.Visible = true
+
+                    esp.HealthBar.Size = Vector2.new(barWidth, barHeight)
+                    esp.HealthBar.Position = Vector2.new(rootPos.X - width * 0.5 - 6, bottomY - barHeight)
+                    esp.HealthBar.Color = Color3.fromHSV((hum.Health / hum.MaxHealth) * 0.33, 1, 1)
+                    esp.HealthBar.Visible = true
+                else
+                    esp.HealthBar.Visible = false
+                    esp.HealthBarBg.Visible = false
+                end
+
+                -- Tracer
+                if Config.Visuals.Tracers and esp.Tracer then
+                    esp.Tracer.From = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y)
+                    esp.Tracer.To = Vector2.new(rootPos.X, bottomY)
+                    esp.Tracer.Color = boxColor
+                    esp.Tracer.Visible = true
+                else
+                    esp.Tracer.Visible = false
+                end
+            else
+                esp.Box.Visible = false
+                esp.Name.Visible = false
+                esp.Distance.Visible = false
+                esp.HealthBar.Visible = false
+                esp.HealthBarBg.Visible = false
+                esp.Tracer.Visible = false
+            end
+        else
+            if esp.Box then esp.Box.Visible = false end
+            if esp.Name then esp.Name.Visible = false end
+            if esp.Distance then esp.Distance.Visible = false end
+            if esp.HealthBar then esp.HealthBar.Visible = false end
+            if esp.HealthBarBg then esp.HealthBarBg.Visible = false end
+            if esp.Tracer then esp.Tracer.Visible = false end
+        end
+    end
+
+    -- Render Objective ESP
+    for obj, item in pairs(WorldESPMarkers) do
+        if obj and obj.Parent then
+            local pos = obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetPivot().Position) or obj.Position
+            local sPos, onScreen = Camera:WorldToViewportPoint(pos)
+            if onScreen then
+                local dist = math.floor((Camera.CFrame.Position - pos).Magnitude)
+                item.Drawing.Text = string.format("%s [%dm]", item.Type == "ATM" and "ATM Machine" or obj.Name, dist)
+                item.Drawing.Position = Vector2.new(sPos.X, sPos.Y)
+                item.Drawing.Visible = (item.Type == "ATM" and Config.Visuals.ATM_ESP) or (item.Type == "Robbery" and Config.Visuals.RobberyESP)
+            else
+                item.Drawing.Visible = false
+            end
+        else
+            item.Drawing:Remove()
+            WorldESPMarkers[obj] = nil
+        end
+    end
+end)
+
+-- =============================================================================
+-- 6. MOVEMENT ENGINE (PHYSICS-SAFE SPEEDHACK, FLY, NOCLIP, SAFE TP)
+-- =============================================================================
+
+-- 6.1 Physics-Safe Speedhack (Bypasses Humanoid.WalkSpeed AC detections)
+RunService.Heartbeat:Connect(function()
+    if Config.Movement.SpeedEnabled and LocalPlayer.Character then
+        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local hum = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if hrp and hum and hum.MoveDirection.Magnitude > 0 then
+            local moveVel = hum.MoveDirection.Unit * Config.Movement.SpeedValue
+            hrp.AssemblyLinearVelocity = Vector3.new(moveVel.X, hrp.AssemblyLinearVelocity.Y, moveVel.Z)
+        end
+    end
+end)
+
+-- 6.2 Noclip Engine
 RunService.Stepped:Connect(function()
-    if BlazyConfig.Movement.Noclip and LocalPlayer.Character then
+    if Config.Movement.Noclip and LocalPlayer.Character then
         for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
             if part:IsA("BasePart") and part.CanCollide then
                 part.CanCollide = false
@@ -262,487 +505,121 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- Infinite Jump
-UserInputService.JumpRequest:Connect(function()
-    if BlazyConfig.Movement.InfiniteJump then
-        local hum = GetHum()
-        if hum and hum.Health > 0 then
-            hum:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
-    end
-end)
-
--- Infinite Stamina & Fall Damage Protection
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if not getgenv().BlazyHubLoaded then break end
-
-        -- Fall Damage Nullification
-        if BlazyConfig.Movement.NoFallDamage then
-            local hum = GetHum()
-            if hum then
-                if hum:GetState() == Enum.HumanoidStateType.Freefall then
-                    hum:ChangeState(Enum.HumanoidStateType.Running)
-                end
-            end
-        end
-
-        -- Stamina Refill Check
-        if BlazyConfig.Movement.InfiniteStamina and LocalPlayer.Character then
-            for _, child in ipairs(LocalPlayer.Character:GetDescendants()) do
-                if (child:IsA("NumberValue") or child:IsA("IntValue")) and string.find(string.lower(child.Name), "stamina") then
-                    child.Value = 100
-                end
-            end
-        end
-    end
-end)
-
--- Safe 6-DOF Fly System
-local flyKeys = { W = false, A = false, S = false, D = false, Space = false, Shift = false }
-
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.W then flyKeys.W = true end
-    if input.KeyCode == Enum.KeyCode.A then flyKeys.A = true end
-    if input.KeyCode == Enum.KeyCode.S then flyKeys.S = true end
-    if input.KeyCode == Enum.KeyCode.D then flyKeys.D = true end
-    if input.KeyCode == Enum.KeyCode.Space then flyKeys.Space = true end
-    if input.KeyCode == Enum.KeyCode.LeftShift then flyKeys.Shift = true end
-end)
-
-UserInputService.InputEnded:Connect(function(input, gpe)
-    if input.KeyCode == Enum.KeyCode.W then flyKeys.W = false end
-    if input.KeyCode == Enum.KeyCode.A then flyKeys.A = false end
-    if input.KeyCode == Enum.KeyCode.S then flyKeys.S = false end
-    if input.KeyCode == Enum.KeyCode.D then flyKeys.D = false end
-    if input.KeyCode == Enum.KeyCode.Space then flyKeys.Space = false end
-    if input.KeyCode == Enum.KeyCode.LeftShift then flyKeys.Shift = false end
-end)
-
-RunService.RenderStepped:Connect(function(dt)
-    if BlazyConfig.Movement.Fly then
-        local hrp = GetHRP()
-        local hum = GetHum()
-        if hrp and hum and hum.Health > 0 then
-            hum.PlatformStand = true
-            local camCF = Camera.CFrame
-            local direction = Vector3.zero
-
-            if flyKeys.W then direction = direction + camCF.LookVector end
-            if flyKeys.S then direction = direction - camCF.LookVector end
-            if flyKeys.D then direction = direction + camCF.RightVector end
-            if flyKeys.A then direction = direction - camCF.RightVector end
-            if flyKeys.Space then direction = direction + Vector3.new(0, 1, 0) end
-            if flyKeys.Shift then direction = direction - Vector3.new(0, 1, 0) end
-
-            if direction.Magnitude > 0 then
-                hrp.CFrame = hrp.CFrame + (direction.Unit * BlazyConfig.Movement.FlySpeed * dt)
-            end
-            hrp.Velocity = Vector3.zero
-        end
-    else
-        local hum = GetHum()
-        if hum and hum.PlatformStand and not hum.Sit then
-            hum.PlatformStand = false
-        end
-    end
-end)
-
---------------------------------------------------------------------------------
--- 3. VISUALS & DRAWING ESP ENGINE (High Quality, 0% GUI Detection Risk)
---------------------------------------------------------------------------------
-local ESPManager = {
-    RenderObjects = {},
-    FOVCircle = nil,
-}
-
--- Create FOV Drawing Circle
-if Drawing and Drawing.new then
-    local circle = Drawing.new("Circle")
-    circle.Thickness = 1.5
-    circle.NumSides = 48
-    circle.Filled = false
-    circle.Transparency = 0.8
-    circle.Color = BlazyConfig.Combat.FOVColor
-    circle.Visible = false
-    ESPManager.FOVCircle = circle
-end
-
-RunService.RenderStepped:Connect(function()
-    if ESPManager.FOVCircle then
-        local mousePos = UserInputService:GetMouseLocation()
-        ESPManager.FOVCircle.Position = mousePos
-        ESPManager.FOVCircle.Radius = BlazyConfig.Combat.FOV
-        ESPManager.FOVCircle.Color = BlazyConfig.Combat.FOVColor
-        ESPManager.FOVCircle.Visible = BlazyConfig.Combat.ShowFOV and BlazyConfig.Combat.SilentAim
-    end
-end)
-
--- Team Color Resolver for ERLC
-local function GetPlayerTeamColor(player)
-    local team = player.Team and string.lower(player.Team.Name) or ""
-    if string.find(team, "police") or string.find(team, "patrol") or string.find(team, "officer") then
-        return Color3.fromRGB(0, 170, 255), "Police"
-    elseif string.find(team, "sheriff") then
-        return Color3.fromRGB(240, 180, 40), "Sheriff"
-    elseif string.find(team, "dot") or string.find(team, "transport") then
-        return Color3.fromRGB(255, 140, 20), "DOT"
-    elseif string.find(team, "fire") or string.find(team, "medic") or string.find(team, "ems") then
-        return Color3.fromRGB(255, 75, 75), "EMS/Fire"
-    elseif string.find(team, "criminal") or string.find(team, "wanted") or string.find(team, "outlaw") then
-        return Color3.fromRGB(255, 45, 45), "Criminal"
-    else
-        return Color3.fromRGB(120, 230, 120), "Civilian"
-    end
-end
-
-local function CreateESP(player)
-    if not Drawing or not Drawing.new then return end
-
-    local esp = {
-        BoxOutline = Drawing.new("Square"),
-        Box = Drawing.new("Square"),
-        Tracer = Drawing.new("Line"),
-        Name = Drawing.new("Text"),
-        Info = Drawing.new("Text"),
-        HealthBar = Drawing.new("Line"),
-        HealthBarOutline = Drawing.new("Line"),
-    }
-
-    esp.BoxOutline.Thickness = 3
-    esp.BoxOutline.Filled = false
-    esp.BoxOutline.Color = Color3.fromRGB(0, 0, 0)
-    esp.BoxOutline.Transparency = 0.7
-
-    esp.Box.Thickness = 1
-    esp.Box.Filled = false
-    esp.Box.Transparency = 1
-
-    esp.Tracer.Thickness = 1
-    esp.Tracer.Transparency = 0.8
-
-    esp.Name.Center = true
-    esp.Name.Outline = true
-    esp.Name.Size = 13
-
-    esp.Info.Center = true
-    esp.Info.Outline = true
-    esp.Info.Size = 11
-
-    esp.HealthBarOutline.Thickness = 4
-    esp.HealthBarOutline.Color = Color3.fromRGB(0, 0, 0)
-
-    esp.HealthBar.Thickness = 2
-
-    local function RemoveESP()
-        for _, obj in pairs(esp) do
-            pcall(function() obj:Remove() end)
-        end
-    end
-
-    local conn
-    conn = RunService.RenderStepped:Connect(function()
-        if not getgenv().BlazyHubLoaded or not player or not player.Parent then
-            RemoveESP()
-            conn:Disconnect()
-            return
-        end
-
-        local char = player.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChild("Humanoid")
-
-        if not BlazyConfig.Visuals.ESP or not hrp or not hum or hum.Health <= 0 then
-            for _, obj in pairs(esp) do obj.Visible = false end
-            return
-        end
-
-        local localHRP = GetHRP()
-        if not localHRP then return end
-
-        local dist = (hrp.Position - localHRP.Position).Magnitude
-        if dist > BlazyConfig.Visuals.MaxDistance then
-            for _, obj in pairs(esp) do obj.Visible = false end
-            return
-        end
-
-        local teamColor, teamName = GetPlayerTeamColor(player)
-        local isLaw = (teamName == "Police" or teamName == "Sheriff")
-        if isLaw and not BlazyConfig.Visuals.ShowCops then
-            for _, obj in pairs(esp) do obj.Visible = false end
-            return
-        end
-        if not isLaw and not BlazyConfig.Visuals.ShowCivs then
-            for _, obj in pairs(esp) do obj.Visible = false end
-            return
-        end
-
-        local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
-        if not onScreen then
-            for _, obj in pairs(esp) do obj.Visible = false end
-            return
-        end
-
-        local head = char:FindFirstChild("Head")
-        local headPos = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0)) or Vector3.new(pos.X, pos.Y - 20, 0)
-        local legPos = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
-
-        local height = math.abs(headPos.Y - legPos.Y)
-        local width = height * 0.65
-        local boxX = pos.X - (width / 2)
-        local boxY = headPos.Y
-
-        -- Box ESP
-        if BlazyConfig.Visuals.Boxes then
-            esp.BoxOutline.Size = Vector2.new(width, height)
-            esp.BoxOutline.Position = Vector2.new(boxX, boxY)
-            esp.BoxOutline.Visible = true
-
-            esp.Box.Size = Vector2.new(width, height)
-            esp.Box.Position = Vector2.new(boxX, boxY)
-            esp.Box.Color = teamColor
-            esp.Box.Visible = true
-        else
-            esp.BoxOutline.Visible = false
-            esp.Box.Visible = false
-        end
-
-        -- Tracers
-        if BlazyConfig.Visuals.Tracers then
-            esp.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
-            esp.Tracer.To = Vector2.new(pos.X, legPos.Y)
-            esp.Tracer.Color = teamColor
-            esp.Tracer.Visible = true
-        else
-            esp.Tracer.Visible = false
-        end
-
-        -- Name Text
-        if BlazyConfig.Visuals.Names then
-            esp.Name.Text = string.format("%s (@%s)", player.DisplayName, player.Name)
-            esp.Name.Position = Vector2.new(pos.X, boxY - 16)
-            esp.Name.Color = Color3.fromRGB(255, 255, 255)
-            esp.Name.Visible = true
-        else
-            esp.Name.Visible = false
-        end
-
-        -- Distance and Team Info
-        if BlazyConfig.Visuals.Distance then
-            esp.Info.Text = string.format("[%s] • %dm", teamName, math.floor(dist))
-            esp.Info.Position = Vector2.new(pos.X, boxY + height + 2)
-            esp.Info.Color = teamColor
-            esp.Info.Visible = true
-        else
-            esp.Info.Visible = false
-        end
-
-        -- Health Bar
-        if BlazyConfig.Visuals.HealthBar then
-            local healthPct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
-            local barHeight = height * healthPct
-            local barX = boxX - 6
-
-            esp.HealthBarOutline.From = Vector2.new(barX, boxY + height)
-            esp.HealthBarOutline.To = Vector2.new(barX, boxY)
-            esp.HealthBarOutline.Visible = true
-
-            esp.HealthBar.From = Vector2.new(barX, boxY + height)
-            esp.HealthBar.To = Vector2.new(barX, boxY + height - barHeight)
-            esp.HealthBar.Color = Color3.fromHSV(healthPct * 0.35, 1, 1)
-            esp.HealthBar.Visible = true
-        else
-            esp.HealthBarOutline.Visible = false
-            esp.HealthBar.Visible = false
-        end
-    end)
-end
-
-for _, p in ipairs(Players:GetPlayers()) do
-    if p ~= LocalPlayer then CreateESP(p) end
-end
-Players.PlayerAdded:Connect(function(p)
-    if p ~= LocalPlayer then CreateESP(p) end
-end)
-
---------------------------------------------------------------------------------
--- 4. TELEPORTATION ENGINE (Safe Multi-Step & Direct)
---------------------------------------------------------------------------------
-local TeleportEngine = {}
-
--- Key Landmark Coordinates for Liberty County
-TeleportEngine.Locations = {
-    ["River City Police Dept"] = Vector3.new(-682, 10, -1124),
-    ["Springfield Sheriff Office"] = Vector3.new(148, 12, 1205),
-    ["Liberty County Hospital"] = Vector3.new(-245, 10, -780),
-    ["Fire Department Stn 1"] = Vector3.new(-312, 10, -960),
-    ["Liberty Bank (Downtown)"] = Vector3.new(-815, 10, -1350),
-    ["Jewelry Store"] = Vector3.new(-920, 10, -1420),
-    ["Liberty Guns & Ammo"] = Vector3.new(-1105, 10, -890),
-    ["Downtown Tool Store"] = Vector3.new(-740, 10, -1020),
-    ["Main Car Dealership"] = Vector3.new(410, 10, 850),
-    ["Highway Gas Station"] = Vector3.new(1250, 12, 320),
-    ["Farm & Agricultural Hub"] = Vector3.new(1820, 14, 2100),
-    ["Postal & Mail Sorting Center"] = Vector3.new(-540, 10, -680)
-}
-
-function TeleportEngine:TeleportTo(targetPosition, safe)
-    local hrp = GetHRP()
+-- 6.3 Smooth Physics Fly Engine
+local FlyBodyGyro, FlyBodyVel
+local function UpdateFly(enabled)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    if safe or BlazyConfig.Teleport.SafeMode then
-        task.spawn(function()
-            local startPos = hrp.Position
-            local totalDist = (targetPosition - startPos).Magnitude
-            local stepSize = BlazyConfig.Teleport.StepDistance
-            local steps = math.ceil(totalDist / stepSize)
-            local stepVec = (targetPosition - startPos) / steps
+    if enabled then
+        FlyBodyGyro = Instance.new("BodyGyro")
+        FlyBodyGyro.P = 9e4
+        FlyBodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        FlyBodyGyro.CFrame = hrp.CFrame
+        FlyBodyGyro.Parent = hrp
 
-            for i = 1, steps do
-                if not getgenv().BlazyHubLoaded or not GetHRP() then break end
-                GetHRP().CFrame = CFrame.new(startPos + (stepVec * i))
-                task.wait(BlazyConfig.Teleport.StepDelay)
+        FlyBodyVel = Instance.new("BodyVelocity")
+        FlyBodyVel.Velocity = Vector3.new(0, 0, 0)
+        FlyBodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        FlyBodyVel.Parent = hrp
+
+        task.spawn(function()
+            while Config.Movement.FlyEnabled and hrp and FlyBodyVel and FlyBodyGyro do
+                local camCF = Camera.CFrame
+                local dir = Vector3.new()
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + camCF.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - camCF.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - camCF.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + camCF.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.new(0, 1, 0) end
+
+                FlyBodyGyro.CFrame = camCF
+                FlyBodyVel.Velocity = (dir.Magnitude > 0) and (dir.Unit * Config.Movement.FlySpeed) or Vector3.new(0, 0, 0)
+                RunService.RenderStepped:Wait()
             end
-            GetHRP().CFrame = CFrame.new(targetPosition)
+            if FlyBodyGyro then FlyBodyGyro:Destroy() end
+            if FlyBodyVel then FlyBodyVel:Destroy() end
         end)
     else
-        hrp.CFrame = CFrame.new(targetPosition)
+        if FlyBodyGyro then FlyBodyGyro:Destroy() end
+        if FlyBodyVel then FlyBodyVel:Destroy() end
     end
 end
 
--- Click TP Tool
-local function GiveClickTPTool()
-    local tool = Instance.new("Tool")
-    tool.Name = "⚡ Click TP (BLAZY)"
-    tool.RequiresHandle = false
-    tool.Activated:Connect(function()
-        local mouse = LocalPlayer:GetMouse()
-        if mouse and mouse.Hit then
-            TeleportEngine:TeleportTo(mouse.Hit.Position + Vector3.new(0, 3, 0), BlazyConfig.Teleport.SafeMode)
+-- 6.4 Safe Teleportation (Anti-Rubberband Chunk Interpolation)
+function AnticheatHooks.SafeTeleport(targetPos)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if not Config.Movement.SafeTP then
+        hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))
+        return
+    end
+
+    -- Progressive micro-stepping to bypass server position delta sanity checks
+    local startPos = hrp.Position
+    local distance = (targetPos - startPos).Magnitude
+    local steps = math.clamp(math.ceil(distance / 25), 1, 30)
+
+    task.spawn(function()
+        for i = 1, steps do
+            local currentPos = startPos:Lerp(targetPos, i / steps)
+            hrp.CFrame = CFrame.new(currentPos + Vector3.new(0, 2, 0))
+            task.wait(0.04)
         end
+        hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))
     end)
-    tool.Parent = LocalPlayer.Backpack
 end
 
---------------------------------------------------------------------------------
--- 5. AUTOMATION & ECONOMY ENGINE (ATMs, Minigames, Jobs, Robberies)
---------------------------------------------------------------------------------
-local AutoFarmEngine = {
-    IsFarming = false,
+-- Predefined ERLC Waypoints
+local ERLCWaypoints = {
+    ["Bank Vault"]        = Vector3.new(840, 24, 450),
+    ["Jewelry Store"]     = Vector3.new(-120, 24, 860),
+    ["Police Department"] = Vector3.new(350, 25, -200),
+    ["Sheriff Office"]    = Vector3.new(-920, 30, -410),
+    ["Tool & Hardware"]   = Vector3.new(120, 24, 620),
+    ["Car Dealership"]    = Vector3.new(-450, 24, 180),
+    ["Hospital"]          = Vector3.new(620, 24, -80),
+    ["Fire Station"]      = Vector3.new(410, 24, 150)
 }
 
--- Find all ATMs in workspace
-function AutoFarmEngine:FindATMs()
-    local atms = {}
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") or obj:IsA("BasePart") then
-            local name = string.lower(obj.Name)
-            if string.find(name, "atm") or string.find(name, "cashmachine") then
-                table.insert(atms, obj)
-            end
-        end
-    end
-    return atms
-end
+-- =============================================================================
+-- 7. ERLC AUTO-FARM & AUTOMATION (ATM, ROBBERIES, JOBS)
+-- =============================================================================
 
--- Fire Proximity Prompt safely with executor polyfills
-local function SafeTriggerPrompt(prompt)
-    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
-    pcall(function()
-        if fireproximityprompt then
-            fireproximityprompt(prompt)
-        else
-            prompt:InputHoldBegin()
-            task.wait(prompt.HoldDuration + 0.1)
-            prompt:InputHoldEnd()
-        end
-    end)
-    return true
-end
-
--- Automated ATM Robbery Routine
+-- 7.1 Auto ATM Robbery & Minigame Solver
 task.spawn(function()
-    while true do
-        task.wait(1.5)
-        if not getgenv().BlazyHubLoaded then break end
-
-        if BlazyConfig.Automation.AutoATM and not AutoFarmEngine.IsFarming then
-            local atms = AutoFarmEngine:FindATMs()
-            local hrp = GetHRP()
-
-            if hrp and #atms > 0 then
-                -- Sort by nearest
-                table.sort(atms, function(a, b)
-                    local posA = a:IsA("Model") and a:GetPivot().Position or a.Position
-                    local posB = b:IsA("Model") and b:GetPivot().Position or b.Position
-                    return (posA - hrp.Position).Magnitude < (posB - hrp.Position).Magnitude
-                end)
-
-                local targetATM = atms[1]
-                local atmPos = targetATM:IsA("Model") and targetATM:GetPivot().Position or targetATM.Position
-
-                -- Step 1: Safe Teleport to ATM
-                AutoFarmEngine.IsFarming = true
-                TeleportEngine:TeleportTo(atmPos + Vector3.new(0, 2, 0), true)
-                task.wait(1.0)
-
-                -- Step 2: Trigger ATM Interaction Prompt
-                local prompt = targetATM:FindFirstChildWhichIsA("ProximityPrompt", true)
-                if prompt then
-                    SafeTriggerPrompt(prompt)
-                    task.wait(0.5)
-
-                    -- Step 3: Humanized Minigame Auto-Solver
-                    local startTime = tick()
-                    while (tick() - startTime) < 8 do
-                        -- Humanized timing jitter between 150ms and 280ms
-                        local jitter = BlazyConfig.Automation.MinigameDelay + (math.random(10, 80) / 1000)
-                        task.wait(jitter)
-                        -- Trigger interaction pulse
-                        SafeTriggerPrompt(prompt)
-                    end
-                end
-
-                -- Step 4: Auto Deposit to Bank if enabled
-                if BlazyConfig.Automation.AutoDeposit then
-                    task.wait(1.0)
-                    local bankPos = TeleportEngine.Locations["Liberty Bank (Downtown)"]
-                    if bankPos then
-                        TeleportEngine:TeleportTo(bankPos, true)
-                        task.wait(2.0)
-                    end
-                end
-
-                AutoFarmEngine.IsFarming = false
-                task.wait(3.0)
-            end
-        end
-    end
-end)
-
--- Automated Jobs (Mail Delivery / Sanitation)
-task.spawn(function()
-    while true do
-        task.wait(2.0)
-        if not getgenv().BlazyHubLoaded then break end
-
-        if BlazyConfig.Automation.AutoJob then
-            local hrp = GetHRP()
+    while task.wait(1.5) do
+        if IsERLC and Config.Automation.AutoATM and LocalPlayer.Character then
+            local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
-                -- Search for Job Markers / Interactive Prompts
-                for _, prompt in ipairs(Workspace:GetDescendants()) do
-                    if prompt:IsA("ProximityPrompt") then
-                        local text = string.lower(prompt.ActionText .. " " .. prompt.ObjectText)
-                        if string.find(text, "mail") or string.find(text, "deliver") or string.find(text, "clean") or string.find(text, "package") then
-                            local part = prompt.Parent
-                            if part and part:IsA("BasePart") then
-                                TeleportEngine:TeleportTo(part.Position + Vector3.new(0, 3, 0), true)
-                                task.wait(0.8)
-                                SafeTriggerPrompt(prompt)
-                                task.wait(1.5)
-                                break
+                -- Locate nearest ATM
+                for _, obj in ipairs(Workspace:GetDescendants()) do
+                    if obj.Name:match("ATM") and (obj:IsA("Model") or obj:IsA("BasePart")) then
+                        local pos = obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetPivot().Position) or obj.Position
+                        local dist = (hrp.Position - pos).Magnitude
+                        if dist <= 12 then
+                            -- Auto-trigger interaction prompt
+                            local prompt = obj:FindFirstChildOfClass("ProximityPrompt", true)
+                            if prompt and prompt.Enabled then
+                                fireproximityprompt(prompt)
+                            end
+
+                            -- Auto-solve ATM minigame UI if open
+                            local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+                            if playerGui then
+                                local atmGui = playerGui:FindFirstChild("ATMGui") or playerGui:FindFirstChild("Minigame")
+                                if atmGui and atmGui.Enabled then
+                                    -- Signal completion to ATM server remotes
+                                    for _, remote in ipairs(ReplicatedStorage:GetDescendants()) do
+                                        if remote:IsA("RemoteEvent") and (remote.Name:match("ATM") or remote.Name:match("Hack")) then
+                                            remote:FireServer(obj, true)
+                                        end
+                                    end
+                                end
                             end
                         end
                     end
@@ -752,443 +629,116 @@ task.spawn(function()
     end
 end)
 
---------------------------------------------------------------------------------
--- 6. RESPONSIVE USER INTERFACE (Fluent-Modded + Standalone Backup)
---------------------------------------------------------------------------------
-local function InitializeUI()
-    local loadedFluent, Fluent = pcall(function()
-        return loadstring(game:HttpGet("https://github.com/StyearX/Fluent-Modded/releases/download/1.6.0/main.lua"))()
-    end)
-
-    if loadedFluent and Fluent then
-        -- Fluent Theme Registration: Blazy Obsidian
-        Fluent:AddTheme({
-            Name = "Blazy Obsidian",
-            Accent = "#ff4444",
-            AcrylicMain = "#0a0a0c",
-            AcrylicBorder = "#2b2b36",
-            AcrylicNoise = 0.9,
-            TitleBarLine = "#ff3333",
-            Tab = "#111115",
-            Element = "#131317",
-            ElementBorder = "#2b2b35",
-            InElementBorder = "#1c1c22",
-            ElementTransparency = 0.88,
-            ElementBorderThickness = 1,
-            ToggleSlider = "#282830",
-            ToggleToggled = "#ff4444",
-            SliderRail = "#202028",
-            CheckboxUnchecked = "#22222a",
-            CheckboxChecked = "#ff4444",
-            CheckboxCheck = "#ffffff",
-            ProgressBarRail = "#202028",
-            ProgressBarFill = "#ff4444",
-            DropdownFrame = "#101014",
-            DropdownHolder = "#131318",
-            DropdownBorder = "#2a2a35",
-            DropdownOption = "#181820",
-            DropdownBorderThickness = 1,
-            Keybind = "#1a1a22",
-            Input = "#121216",
-            InputFocused = "#1e1e28",
-            InputIndicator = "#ff4444",
-            Dialog = "#0d0d10",
-            DialogHolder = "#131318",
-            DialogHolderLine = "#2a2a35",
-            DialogButton = "#242430",
-            DialogButtonBorder = "#3a3a4a",
-            DialogBorder = "#262632",
-            DialogInput = "#14141a",
-            DialogInputLine = "#ff4444",
-            Text = "#f0f0f5",
-            SubText = "#9090a0",
-            Hover = "#1c1c24",
-            HoverChange = 0.05,
-            BackgroundTransparency = 0.05,
-            StrokeShine = true,
-            WarningNotifyColor = "#f5a623",
-            SuccessNotifyColor = "#4cd964",
-            ErrorNotifyColor = "#ff3b30",
-            InfoNotifyColor = "#007aff",
-        })
-
-        local Window = Fluent:CreateWindow({
-            Title = "BLAZY-HUB",
-            SubTitle = "Liberty County v2.5",
-            TabWidth = 150,
-            Acrylic = true,
-            Theme = "Blazy Obsidian",
-            Size = UDim2.fromOffset(640, 520),
-            TitleIcon = "rbxassetid://10723415766",
-            UserInfo = {
-                UserInfo = true,
-                UserInfoTitle = LocalPlayer.DisplayName,
-                UserInfoSubtitle = "@" .. LocalPlayer.Name,
-            }
-        })
-
-        -- Tabs
-        local Tabs = {
-            Main = Window:AddTab({ Title = "Dashboard", Icon = "home" }),
-            Combat = Window:AddTab({ Title = "Combat", Icon = "crosshair" }),
-            Movement = Window:AddTab({ Title = "Movement", Icon = "zap" }),
-            Visuals = Window:AddTab({ Title = "Visuals", Icon = "eye" }),
-            Teleport = Window:AddTab({ Title = "Teleport", Icon = "map-pin" }),
-            Automation = Window:AddTab({ Title = "Automation", Icon = "dollar-sign" }),
-            Settings = Window:AddTab({ Title = "Settings", Icon = "sliders" }),
-        }
-
-        -- Dashboard Tab
-        Tabs.Main:AddParagraph({
-            Title = "BLAZY-HUB — ERLC Suite",
-            Content = "Client-side Anti-Cheat Evasion: ACTIVE\nProperty Spoofing: ACTIVE\nDrawing ESP Pipeline: ACTIVE\nStatus: Undetected"
-        })
-
-        Tabs.Main:AddToggle("BypassSpoof", {
-            Title = "Humanoid Property Spoofing",
-            Description = "Hides WalkSpeed & JumpPower modifications from the anti-cheat",
-            Default = true,
-            Callback = function(val) BlazyConfig.Bypass.PropertySpoof = val end
-        })
-
-        Tabs.Main:AddToggle("BypassRemote", {
-            Title = "Telemetry & AC Remote Blocker",
-            Description = "Blocks outbound ban & error reporting remotes",
-            Default = true,
-            Callback = function(val) BlazyConfig.Bypass.RemoteBlock = val end
-        })
-
-        -- Combat Tab
-        local CombatSection = Tabs.Combat:AddSection("Universal Silent Aim")
-        CombatSection:AddToggle("SilentAimToggle", {
-            Title = "Enable Silent Aim",
-            Description = "Intercepts bullet raycasts towards nearest target bone",
-            Default = false,
-            Callback = function(val) BlazyConfig.Combat.SilentAim = val end
-        })
-
-        CombatSection:AddToggle("ShowFOVToggle", {
-            Title = "Show FOV Circle",
-            Default = false,
-            Callback = function(val) BlazyConfig.Combat.ShowFOV = val end
-        })
-
-        CombatSection:AddSlider("FOVSlider", {
-            Title = "Silent Aim FOV Radius",
-            Min = 30,
-            Max = 400,
-            Default = 120,
-            Rounding = 0,
-            Callback = function(val) BlazyConfig.Combat.FOV = val end
-        })
-
-        CombatSection:AddDropdown("BoneDropdown", {
-            Title = "Target Bone",
-            Values = { "Head", "Torso", "HumanoidRootPart" },
-            Default = "Head",
-            Callback = function(val) BlazyConfig.Combat.HitBone = val end
-        })
-
-        CombatSection:AddToggle("TeamCheckToggle", {
-            Title = "Team Check (Don't target allies)",
-            Default = true,
-            Callback = function(val) BlazyConfig.Combat.TeamCheck = val end
-        })
-
-        CombatSection:AddToggle("WallCheckToggle", {
-            Title = "Wall Check (Visible targets only)",
-            Default = true,
-            Callback = function(val) BlazyConfig.Combat.WallCheck = val end
-        })
-
-        local GunSection = Tabs.Combat:AddSection("Gun Modifications")
-        GunSection:AddToggle("NoSpreadToggle", {
-            Title = "No Spread",
-            Description = "Eliminates bullet trajectory variance",
-            Default = false,
-            Callback = function(val) BlazyConfig.Combat.NoSpread = val end
-        })
-
-        -- Movement Tab
-        local MoveSection = Tabs.Movement:AddSection("Speed & Movement")
-        MoveSection:AddToggle("WalkSpeedToggle", {
-            Title = "CFrame WalkSpeed",
-            Description = "Safe movement without touching Humanoid.WalkSpeed",
-            Default = false,
-            Callback = function(val) BlazyConfig.Movement.WalkSpeed = val end
-        })
-
-        MoveSection:AddSlider("WalkSpeedSlider", {
-            Title = "Speed (Studs / Sec)",
-            Min = 16,
-            Max = 120,
-            Default = 28,
-            Rounding = 0,
-            Callback = function(val) BlazyConfig.Movement.SpeedValue = val end
-        })
-
-        MoveSection:AddToggle("FlyToggle", {
-            Title = "Camera 6-DOF Fly",
-            Description = "Fly using W, A, S, D, Space, LeftShift",
-            Default = false,
-            Callback = function(val) BlazyConfig.Movement.Fly = val end
-        })
-
-        MoveSection:AddSlider("FlySpeedSlider", {
-            Title = "Fly Velocity",
-            Min = 20,
-            Max = 150,
-            Default = 50,
-            Rounding = 0,
-            Callback = function(val) BlazyConfig.Movement.FlySpeed = val end
-        })
-
-        MoveSection:AddToggle("NoclipToggle", {
-            Title = "Noclip (Walk Through Walls)",
-            Default = false,
-            Callback = function(val) BlazyConfig.Movement.Noclip = val end
-        })
-
-        MoveSection:AddToggle("InfJumpToggle", {
-            Title = "Infinite Jump",
-            Default = false,
-            Callback = function(val) BlazyConfig.Movement.InfiniteJump = val end
-        })
-
-        MoveSection:AddToggle("InfStaminaToggle", {
-            Title = "Infinite Stamina",
-            Default = false,
-            Callback = function(val) BlazyConfig.Movement.InfiniteStamina = val end
-        })
-
-        MoveSection:AddToggle("NoFallDmgToggle", {
-            Title = "No Fall Damage",
-            Default = false,
-            Callback = function(val) BlazyConfig.Movement.NoFallDamage = val end
-        })
-
-        -- Visuals Tab
-        local VisSection = Tabs.Visuals:AddSection("Drawing ESP")
-        VisSection:AddToggle("ESPToggle", {
-            Title = "Master ESP Switch",
-            Default = false,
-            Callback = function(val) BlazyConfig.Visuals.ESP = val end
-        })
-
-        VisSection:AddToggle("BoxesToggle", {
-            Title = "2D Bounding Boxes",
-            Default = true,
-            Callback = function(val) BlazyConfig.Visuals.Boxes = val end
-        })
-
-        VisSection:AddToggle("TracersToggle", {
-            Title = "Tracers",
-            Default = false,
-            Callback = function(val) BlazyConfig.Visuals.Tracers = val end
-        })
-
-        VisSection:AddToggle("NamesToggle", {
-            Title = "Player Names & Tags",
-            Default = true,
-            Callback = function(val) BlazyConfig.Visuals.Names = val end
-        })
-
-        VisSection:AddToggle("DistToggle", {
-            Title = "Distance & Team Labels",
-            Default = true,
-            Callback = function(val) BlazyConfig.Visuals.Distance = val end
-        })
-
-        VisSection:AddToggle("HealthToggle", {
-            Title = "Health Bars",
-            Default = true,
-            Callback = function(val) BlazyConfig.Visuals.HealthBar = val end
-        })
-
-        VisSection:AddSlider("MaxDistSlider", {
-            Title = "Render Distance (Studs)",
-            Min = 200,
-            Max = 4000,
-            Default = 1500,
-            Rounding = 0,
-            Callback = function(val) BlazyConfig.Visuals.MaxDistance = val end
-        })
-
-        -- Teleport Tab
-        local TPSection = Tabs.Teleport:AddSection("Navigation & Teleports")
-        TPSection:AddToggle("SafeModeToggle", {
-            Title = "Anti-Cheat Safe Step Teleport",
-            Description = "Steps in 20-stud chunks to evade position snapback",
-            Default = true,
-            Callback = function(val) BlazyConfig.Teleport.SafeMode = val end
-        })
-
-        TPSection:AddButton({
-            Title = "Get Click-TP Tool",
-            Description = "Equip tool and click anywhere on the map to teleport",
-            Callback = function() GiveClickTPTool() end
-        })
-
-        local locNames = {}
-        for name in pairs(TeleportEngine.Locations) do table.insert(locNames, name) end
-        table.sort(locNames)
-
-        TPSection:AddDropdown("LocationDropdown", {
-            Title = "Teleport to Location",
-            Values = locNames,
-            Default = locNames[1],
-            Callback = function(val)
-                local pos = TeleportEngine.Locations[val]
-                if pos then TeleportEngine:TeleportTo(pos, BlazyConfig.Teleport.SafeMode) end
+-- 7.2 Auto Glass Cutter (Jewelry Store)
+task.spawn(function()
+    while task.wait(1.0) do
+        if IsERLC and Config.Automation.AutoGlassCutter and LocalPlayer.Character then
+            local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                for _, obj in ipairs(Workspace:GetDescendants()) do
+                    if (obj.Name:match("GlassCase") or obj.Name:match("JewelryCase")) and (obj:IsA("Model") or obj:IsA("BasePart")) then
+                        local pos = obj:IsA("Model") and (obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetPivot().Position) or obj.Position
+                        if (hrp.Position - pos).Magnitude <= 10 then
+                            local prompt = obj:FindFirstChildOfClass("ProximityPrompt", true)
+                            if prompt and prompt.Enabled then
+                                fireproximityprompt(prompt)
+                            end
+                        end
+                    end
+                end
             end
-        })
+        end
+    end
+end)
 
-        -- Automation Tab
-        local AutoSection = Tabs.Automation:AddSection("Economy Automation")
-        AutoSection:AddToggle("AutoATMToggle", {
-            Title = "Auto ATM Robber",
-            Description = "Automatically locates, interacts with, and robs ATMs",
-            Default = false,
-            Callback = function(val) BlazyConfig.Automation.AutoATM = val end
-        })
-
-        AutoSection:AddToggle("AutoDepositToggle", {
-            Title = "Auto Deposit Cash to Bank",
-            Description = "Deposits stolen money after robbing to protect earnings",
-            Default = true,
-            Callback = function(val) BlazyConfig.Automation.AutoDeposit = val end
-        })
-
-        AutoSection:AddSlider("MinigameDelaySlider", {
-            Title = "Minigame Click Delay (Seconds)",
-            Min = 0.10,
-            Max = 0.40,
-            Default = 0.18,
-            Rounding = 2,
-            Callback = function(val) BlazyConfig.Automation.MinigameDelay = val end
-        })
-
-        AutoSection:AddToggle("AutoJobToggle", {
-            Title = "Auto Job & Work (Mail / Sanitation)",
-            Description = "Automatically pathfinds and performs job delivery actions",
-            Default = false,
-            Callback = function(val) BlazyConfig.Automation.AutoJob = val end
-        })
-
-        -- Settings Tab
-        local SettingSection = Tabs.Settings:AddSection("Hub Management")
-        SettingSection:AddButton({
-            Title = "Unload BLAZY-HUB",
-            Description = "Cleans up all Drawing objects, hooks, and active threads",
-            Callback = function()
-                getgenv().BlazyHubLoaded = false
-                if ESPManager.FOVCircle then ESPManager.FOVCircle:Remove() end
-                Window:Destroy()
-                print("[BLAZY-HUB]: Successfully unloaded.")
+-- 7.3 Anti-Arrest & Anti-Taser Evasion
+RunService.Heartbeat:Connect(function()
+    if IsERLC and Config.Automation.AntiArrest and LocalPlayer.Character then
+        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Team and player.Team.Name:lower():match("police") then
+                    local copChar = player.Character
+                    local copHrp = copChar and copChar:FindFirstChild("HumanoidRootPart")
+                    if copHrp and (hrp.Position - copHrp.Position).Magnitude < 14 then
+                        -- Check if officer has handcuffs or taser equipped
+                        local tool = copChar:FindFirstChildOfClass("Tool")
+                        if tool and (tool.Name:lower():match("cuff") or tool.Name:lower():match("taser")) then
+                            -- Safe evasion jump boost
+                            hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 45, hrp.AssemblyLinearVelocity.Z)
+                        end
+                    end
+                end
             end
-        })
-
-        Fluent:Notify({
-            Title = "BLAZY-HUB Active",
-            Content = "Emergency Response: Liberty County suite loaded successfully.",
-            Duration = 5
-        })
-
-        return
+        end
     end
+end)
 
-    ----------------------------------------------------------------------------
-    -- STANDALONE FALLBACK GUI (Ensures 100% operation without external CDN)
-    ----------------------------------------------------------------------------
-    warn("[BLAZY-HUB]: External Fluent UI failed to load. Initializing Standalone Safe GUI.")
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "BlazyHub_" .. math.random(10000, 99999)
-    screenGui.ResetOnSpawn = false
-
-    local targetParent = (gethui and gethui()) or (syn and syn.protect_gui and LocalPlayer.PlayerGui) or game:GetService("CoreGui")
-    if syn and syn.protect_gui then pcall(syn.protect_gui, screenGui) end
-    screenGui.Parent = targetParent
-
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Size = UDim2.fromOffset(500, 360)
-    mainFrame.Position = UDim2.new(0.5, -250, 0.5, -180)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.Active = true
-    mainFrame.Draggable = true
-    mainFrame.Parent = screenGui
-
-    local corner = Instance.new("UICorner", mainFrame)
-    corner.CornerRadius = UDim.new(0, 10)
-
-    local stroke = Instance.new("UIStroke", mainFrame)
-    stroke.Color = Color3.fromRGB(255, 60, 60)
-    stroke.Thickness = 1.5
-
-    local title = Instance.new("TextLabel", mainFrame)
-    title.Size = UDim2.new(1, 0, 0, 40)
-    title.Text = "  ⚡ BLAZY-HUB | ERLC (Standalone Mode)"
-    title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 16
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.BackgroundTransparency = 1
-
-    local content = Instance.new("ScrollingFrame", mainFrame)
-    content.Size = UDim2.new(1, -20, 1, -55)
-    content.Position = UDim2.new(0, 10, 0, 45)
-    content.BackgroundTransparency = 1
-    content.ScrollBarThickness = 4
-    content.CanvasSize = UDim2.new(0, 0, 0, 500)
-
-    local layout = Instance.new("UIListLayout", content)
-    layout.Padding = UDim.new(0, 8)
-
-    local function AddSimpleToggle(name, default, callback)
-        local btn = Instance.new("TextButton", content)
-        btn.Size = UDim2.new(1, -10, 0, 35)
-        btn.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
-        btn.Font = Enum.Font.Gotham
-        btn.TextSize = 13
-        btn.TextColor3 = default and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(220, 220, 220)
-        btn.Text = string.format("%s: [%s]", name, default and "ON" or "OFF")
-
-        local btnCorner = Instance.new("UICorner", btn)
-        btnCorner.CornerRadius = UDim.new(0, 6)
-
-        local state = default
-        btn.MouseButton1Click:Connect(function()
-            state = not state
-            btn.Text = string.format("%s: [%s]", name, state and "ON" or "OFF")
-            btn.TextColor3 = state and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(220, 220, 220)
-            callback(state)
-        end)
+-- 7.4 Anti-AFK Disconnector Protection
+LocalPlayer.Idled:Connect(function()
+    if Config.Automation.AntiAFK then
+        local virtualUser = game:GetService("VirtualUser")
+        virtualUser:CaptureController()
+        virtualUser:ClickButton2(Vector2.new(0, 0))
     end
+end)
 
-    AddSimpleToggle("Universal Silent Aim", BlazyConfig.Combat.SilentAim, function(v) BlazyConfig.Combat.SilentAim = v end)
-    AddSimpleToggle("Show Silent Aim FOV", BlazyConfig.Combat.ShowFOV, function(v) BlazyConfig.Combat.ShowFOV = v end)
-    AddSimpleToggle("CFrame WalkSpeed (Safe)", BlazyConfig.Movement.WalkSpeed, function(v) BlazyConfig.Movement.WalkSpeed = v end)
-    AddSimpleToggle("Camera 6-DOF Fly", BlazyConfig.Movement.Fly, function(v) BlazyConfig.Movement.Fly = v end)
-    AddSimpleToggle("Noclip", BlazyConfig.Movement.Noclip, function(v) BlazyConfig.Movement.Noclip = v end)
-    AddSimpleToggle("Infinite Jump", BlazyConfig.Movement.InfiniteJump, function(v) BlazyConfig.Movement.InfiniteJump = v end)
-    AddSimpleToggle("Master Drawing ESP", BlazyConfig.Visuals.ESP, function(v) BlazyConfig.Visuals.ESP = v end)
-    AddSimpleToggle("Auto ATM Robber", BlazyConfig.Automation.AutoATM, function(v) BlazyConfig.Automation.AutoATM = v end)
-    AddSimpleToggle("Auto Job Worker", BlazyConfig.Automation.AutoJob, function(v) BlazyConfig.Automation.AutoJob = v end)
+-- =============================================================================
+-- 8. SLEEK IN-GAME WATERMARK
+-- =============================================================================
+if Drawing then
+    local WatermarkBg = Drawing.new("Square")
+    WatermarkBg.Size = Vector2.new(340, 28)
+    WatermarkBg.Position = Vector2.new(20, 20)
+    WatermarkBg.Color = Color3.fromRGB(12, 12, 18)
+    WatermarkBg.Filled = true
+    WatermarkBg.Transparency = 0.9
+    WatermarkBg.Visible = true
 
-    local tpBtn = Instance.new("TextButton", content)
-    tpBtn.Size = UDim2.new(1, -10, 0, 35)
-    tpBtn.BackgroundColor3 = Color3.fromRGB(40, 20, 25)
-    tpBtn.Font = Enum.Font.GothamBold
-    tpBtn.TextSize = 13
-    tpBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
-    tpBtn.Text = "⚡ Teleport: Liberty Bank"
-    Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 6)
-    tpBtn.MouseButton1Click:Connect(function()
-        TeleportEngine:TeleportTo(TeleportEngine.Locations["Liberty Bank (Downtown)"], true)
+    local WatermarkBorder = Drawing.new("Square")
+    WatermarkBorder.Size = Vector2.new(340, 28)
+    WatermarkBorder.Position = Vector2.new(20, 20)
+    WatermarkBorder.Color = Color3.fromRGB(0, 217, 255)
+    WatermarkBorder.Thickness = 1.0
+    WatermarkBorder.Filled = false
+    WatermarkBorder.Visible = true
+
+    local WatermarkText = Drawing.new("Text")
+    WatermarkText.Text = "BLZEYY HUB | " .. (IsERLC and "ERLC v1.0" or "Universal") .. " | [FPS: 60] | INSERT to toggle"
+    WatermarkText.Size = 13
+    WatermarkText.Position = Vector2.new(28, 26)
+    WatermarkText.Color = Color3.fromRGB(255, 255, 255)
+    WatermarkText.Outline = true
+    WatermarkText.Visible = true
+
+    -- Update FPS
+    local lastTime = tick()
+    local frameCount = 0
+    RunService.RenderStepped:Connect(function()
+        frameCount = frameCount + 1
+        local now = tick()
+        if now - lastTime >= 1.0 then
+            local fps = math.floor(frameCount / (now - lastTime))
+            WatermarkText.Text = string.format("BLZEYY HUB | %s | [FPS: %d] | INSERT to toggle", IsERLC and "ERLC v1.0" or "Universal", fps)
+            frameCount = 0
+            lastTime = now
+        end
     end)
 end
 
--- Initialize Interface
-InitializeUI()
+-- =============================================================================
+-- 9. USER INTERFACE HOTKEY INTEGRATION (INSERT)
+-- =============================================================================
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.Insert then
+        Config.Visuals.Master = not Config.Visuals.Master
+        if FOVCircle then FOVCircle.Visible = Config.Combat.DrawFOV and Config.Visuals.Master end
+    end
+end)
 
-print("[BLAZY-HUB]: ERLC Script Suite Loaded and Ready.")
+print("[BLZEYY HUB] Engine successfully initialized!")
+if IsERLC then
+    print("[BLZEYY HUB] ERLC Mode active: ATM auto-solver, Safe TP, Cops ESP, and bypasses loaded.")
+else
+    print("[BLZEYY HUB] Universal Mode active: Silent Aim, ESP, and locomotion engine loaded.")
+end
